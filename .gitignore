@@ -17,3 +17,4 @@ __pycache__/
 # local-only
 CLAUDE.md
 .claude/settings.local.json
+scratch/pics/
