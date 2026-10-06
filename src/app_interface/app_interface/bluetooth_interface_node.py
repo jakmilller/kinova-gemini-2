@@ -1,13 +1,13 @@
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
-from sensor_msgs.msg import Image
-from cv_bridge import CvBridge
+from sensor_msgs.msg import CompressedImage
 import ctypes
 import struct
 import os
 import socket
 import threading
+import json
 
 RFCOMM_CHANNEL = 1
 
@@ -20,7 +20,6 @@ AF_BLUETOOTH = 31
 BTPROTO_RFCOMM = 3
 
 _libc = ctypes.CDLL("libc.so.6", use_errno=True)
-
 
 class _SockaddrRC(ctypes.Structure):
     """struct sockaddr_rc from <bluetooth/rfcomm.h>."""
@@ -84,13 +83,11 @@ class BluetoothInterfaceNode(Node):
         super().__init__('bluetooth_interface_node')
         self.publisher = self.create_publisher(String, '/user_instructions', 10)
         self.create_subscription(String, '/agent/events', self.status_callback, 10)
-        self.create_subscription(Image, '/agent/model_image', self.image_callback, 10)
+        self.create_subscription(CompressedImage, '/agent/model_image', self.image_callback, 10)
 
         self.client_conn = None
         self.client_lock = threading.Lock()
         self.server = None
-
-        self._bridge = CvBridge()
 
         self.server_thread = threading.Thread(target=self.run_server, daemon=True)
         self.server_thread.start()
@@ -144,13 +141,12 @@ class BluetoothInterfaceNode(Node):
                     pass
 
     def status_callback(self, msg):
-        if msg.type == 'model_text': 
-            self.send_to_tablet(msg.data)
+        ev = json.loads(msg.data)
+        if ev['type'] == 'model_text': 
+            self.send_to_tablet(ev['data']['text'])
 
     def image_callback(self, img):
-        compressedImage = self._bridge.cv2_to_compressed_imgmsg(img, dst_format='jpeg')
-        jpeg_bytes = compressedImage.data.tobytes()
-        self.send_image_to_tablet(jpeg_bytes)
+        self.send_image_to_tablet(bytes(img.data))
 
     def send_image_to_tablet(self, imgBytes):
         with self.client_lock:

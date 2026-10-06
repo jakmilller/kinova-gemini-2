@@ -5,6 +5,7 @@ from std_msgs.msg import String
 import asyncio
 import threading
 import traceback
+import json
 
 from .ble_link import BleCentralLink, dbg_ble
 
@@ -20,7 +21,7 @@ class BLEInterfaceNode(Node):
     def __init__(self):
         super().__init__('ble_interface_node')
         self.publisher = self.create_publisher(String, '/user_instructions', 10)
-        self.create_subscription(String, '/brain_status', self.status_callback, 10)
+        self.create_subscription(String, '/agent/events', self.status_callback, 10)
         self._loop = None
         self._link = BleCentralLink(self._on_instruction)
         self._thread = threading.Thread(target = self._run_ble, daemon = True)
@@ -44,11 +45,13 @@ class BLEInterfaceNode(Node):
         self.get_logger().info(f'BLE instruction from phone: "{text}"')
 
     def status_callback(self, msg):
-        dbg_ble(f'/brain_status -> phone: "{msg.data}"')
+        ev = json.loads(msg.data)
         if self._loop is None:
             dbg_ble("   dropped: BLE loop not running yet")
             return
-        asyncio.run_coroutine_threadsafe(self._link.send_status(msg.data), self._loop)
+        if ev.type == 'model_text':
+            dbg_ble(f'/agent/events -> phone: "{ev['data']['text']}"')
+            asyncio.run_coroutine_threadsafe(self._link.send_status(ev['data']['text']), self._loop)
 
     
 

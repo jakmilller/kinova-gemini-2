@@ -1,12 +1,12 @@
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String 
-from sensor_msgs.msg import Image
-from cv_bridge import CvBridge
+from sensor_msgs.msg import CompressedImage
 import threading
 import socket
 import struct
 import threading
+import json
 
 LISTEN_PORT = 9100
 
@@ -24,10 +24,9 @@ class NetworkInterfaceNode(Node):
         super().__init__('network_interface_node')
         self.publisher = self.create_publisher(String, '/user_instructions', 10)
         self.create_subscription(String, '/agent/events', self.status_callback, 10)
-        self.create_subscription(Image, '/agent/model_image', self.image_callback, 10)
+        self.create_subscription(CompressedImage, '/agent/model_image', self.image_callback, 10)
         self.get_logger().info('Network Interface Node listening...')
 
-        self._bridge = CvBridge()
         self.client_conn = None
         self.client_lock = threading.Lock()
 
@@ -71,13 +70,12 @@ class NetworkInterfaceNode(Node):
                     pass
 
     def status_callback(self, msg):
-        if msg.type == 'model_text': 
-            self.send_to_tablet(msg.data)
+        ev = json.loads(msg.data)
+        if ev['type'] == 'model_text': 
+            self.send_to_tablet(ev['data']['text'])
 
     def image_callback(self, img):
-        compressedImage = self._bridge.cv2_to_compressed_imgmsg(img, dst_format='jpeg')
-        jpeg_bytes = compressedImage.data.tobytes()
-        self.send_image_to_tablet(jpeg_bytes)
+        self.send_image_to_tablet(bytes(img.data))
 
     def send_image_to_tablet(self, imgBytes):
         with self.client_lock:
