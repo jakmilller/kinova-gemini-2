@@ -34,7 +34,9 @@ async def locate_objects(snapshot, names: list, cfg: dict, client):
             'id': f'{box["label"]}#{counts[box["label"]]}',
             'label': box['label'],
         }
-        obj.update(localize.centroid(mask, snapshot))
+        obj.update(localize.measure(mask, snapshot))
+        if box.get('depth_mm') is not None:
+            obj['depth_mm'] = round(float(box['depth_mm']), 1)
         objects.append(obj)
 
     annotated = localize.annotate(rgb, objects, masks) if objects else np.copy(rgb)

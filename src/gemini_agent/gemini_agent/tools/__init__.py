@@ -27,7 +27,7 @@ def tool(name: str, description: str, parameters: dict):
     return wrap
 
 
-from . import holster, motion, perception  # noqa: E402,F401  (registers tools)
+from . import grasp, holster, motion, perception  # noqa: E402,F401  (registers tools)
 
 
 def load(names: list, cfg: dict) -> dict:

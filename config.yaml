@@ -1,14 +1,15 @@
 model:
   name: gemini-robotics-er-2-streaming-preview
-  thinking_level: medium            # none | minimal | low | medium | high
-  include_thoughts: true         # thoughts are shown in the UI, never acted on
+  thinking_level: high            # none | minimal | low | medium | high
+  include_thoughts: true         # thoughts are shown in the UI
   system_prompt: prompts/system.md
   context_compression: true      # sliding-window compression for long, image-heavy sessions
 
 tools:                           # enabled tools; comment a line out to remove a tool
   - look
+  - pick
   - move_to
-  - move_relative
+  # - move_relative
   - move_straight
   - set_gripper
   - go_to_preset
@@ -17,14 +18,23 @@ tools:                           # enabled tools; comment a line out to remove a
   - detach
   # - move_to_pose               # raw 6-DoF Euler pose; off by default
 
-holster:                         # ArUco marker id -> tool in that holster slot.
-  1: nothing                        # Maintain by hand to match the physical holster;
-  2: fork                     # the names become the attach/detach enum.
+holster:                         # ArUco marker id -> tool in that holster slot. Maintain by hand to match physical holster
+  1: nothing                 
+  2: fork                    
+
+presets:                         # joint angles, degrees (7 values). Keys become the go_to_preset enum.
+  home: [0.0, 340.2, 179.3, 226.1, 358.5, 329.6, 92.1]                    # default position
+  user: [358.8, 32.4, 181.3, 277.9, 359.1, 24.5, 90.0]                    # facing the user
+  #holster: [0.0, 351, 179.3, 242.7, 359.9, 293.8, 90.0] # test
+  holster: [326.4, 6.87, 149.0, 257.3, 8.86, 291.2, 23.3] # sprint review
+
+
 
 perception:
+  look_prompt: prompts/look.md     # detector prompt: boxes + the per-object depth estimate
   detector_model: gemini-3.5-flash-lite   # any non-streaming Gemini model that returns box_2d; verify availability
   detector_thinking_level: medium   # none | minimal | low | medium | high
-  sam2_repo: /home/mcrr-lab/raf-live/SAM2_streaming   # local SAM2 checkout (not pip-installed)
+  sam2_repo: /home/mcrr-lab/raf-live/SAM2_streaming   # local SAM2 checkout
   sam2_config: sam2.1/sam2.1_hiera_t.yaml            # hydra name under <sam2_repo>/configs
   sam2_checkpoint: checkpoints/sam2.1/sam2.1_hiera_tiny.pt   # relative to sam2_repo, or absolute
   device: cuda
@@ -40,11 +50,6 @@ camera:
   jpeg_quality: 80
   settle_s: 0.3                  # wait after motion before capturing the post-action frame
   sync_slop_s: 0.05              # max color/depth timestamp difference
-
-presets:                         # joint angles, degrees (7 values). Keys become the go_to_preset enum.
-  home: [0.0, 340.2, 179.3, 226.1, 358.5, 329.6, 92.1]                    # default position
-  user: [358.8, 32.4, 181.3, 277.9, 359.1, 24.5, 90.0]                    # facing the user
-  holster: [0.0, 351, 179.3, 242.7, 359.9, 293.8, 90.0]
 
 
 ros:

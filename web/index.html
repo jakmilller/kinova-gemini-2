@@ -352,12 +352,25 @@ function render(type, d) {
     }
 
     case 'look': {
-      const lines = (d.objects || []).map(o =>
-        o.measurable ? `${o.id}  [${o.centroid_xyz.join(', ')}]` : `${o.id}  (not measurable)`);
+      const lines = (d.objects || []).map(o => {
+        if (!o.measurable) return `${o.id}  (not measurable)`;
+        const size = [o.width_mm != null ? `w ${o.width_mm}mm` : null,
+                      o.depth_mm != null ? `d ${o.depth_mm}mm` : null].filter(Boolean).join('  ');
+        return `${o.id}  [${o.centroid_xyz.join(', ')}]${size ? '  ' + size : ''}`;
+      });
       if (d.not_found && d.not_found.length) lines.push('not found: ' + d.not_found.join(', '));
       const card = add(make('div', CLS.tool));
       card.appendChild(make('div', 'text-gray-400 font-bold uppercase text-[9px] tracking-widest mb-1', 'look'));
       card.appendChild(make('div', 'whitespace-pre-wrap text-gray-700', lines.join('\n') || 'nothing found'));
+      break;
+    }
+
+    case 'pick': {
+      const card = add(make('div', CLS.tool));
+      card.appendChild(make('div', 'text-gray-400 font-bold uppercase text-[9px] tracking-widest mb-1', 'pick'));
+      card.appendChild(make('div', 'text-gray-700',
+        `[${(d.target || []).map(v => Number(v).toFixed(3)).join(', ')}]  ` +
+        `w ${d.width_mm}mm d ${d.depth_mm}mm  gripper ${d.preshape} -> ${d.final}`));
       break;
     }
 

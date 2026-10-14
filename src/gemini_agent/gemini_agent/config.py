@@ -28,7 +28,7 @@ REPO_ROOT = CONFIG_PATH.parent
 
 
 def load_config() -> dict:
-    """Read config.yaml, load .env, and resolve model.system_prompt against the repo root."""
+    """Read config.yaml, load .env, and resolve the prompt paths against the repo root."""
     if not CONFIG_PATH.is_file():
         raise FileNotFoundError(
             f'config.yaml not found at {CONFIG_PATH}. '
@@ -43,8 +43,9 @@ def load_config() -> dict:
             f'GEMINI_API_KEY is not set. Copy {REPO_ROOT}/.env.example to '
             f'{REPO_ROOT}/.env and put your key in it.')
 
-    prompt = cfg.get('model', {}).get('system_prompt')
-    if prompt:
-        cfg['model']['system_prompt'] = str(REPO_ROOT / prompt)
+    for section, key in (('model', 'system_prompt'), ('perception', 'look_prompt')):
+        prompt = cfg.get(section, {}).get(key)
+        if prompt:
+            cfg[section][key] = str(REPO_ROOT / prompt)
 
     return cfg

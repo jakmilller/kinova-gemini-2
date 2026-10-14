@@ -16,8 +16,13 @@ if TYPE_CHECKING:
     name='look',
     description=("Locate objects or locations visible in the current camera image. Give one short name per "
                  "object type (e.g. 'red cup', 'wooden block','place to put cup'). Returns each object's centroid in "
-                 'robot base-frame meters. You also receive an annotated image; check that each '
-                 'labeled outline is on the right object. IDs are valid only for this call.'),
+                 "robot base-frame meters, its width_mm across the gripper fingers (measured), and "
+                 'its depth_mm away from the camera (estimated). Pass all three to `pick` to grasp '
+                 'it. You also receive an annotated image; check that each '
+                 'labeled outline is on the right object. IDs are valid only for this call.'
+                 'ONLY call look to return exact coordinates of items you can already see.'
+                 'If the requested objects arent visible in the camera frame, move to the robot until you see them,'
+                 'then call look to return their exact coordinates.'),
     parameters={
         'type': 'object',
         'properties': {

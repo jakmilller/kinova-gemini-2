@@ -25,7 +25,7 @@ All three layers talk only over ROS 2 topics and actions, so each can be run, re
         ▼
   gemini_agent (agent_node) ◄────────► Gemini Live API (streaming)
    ├─ Session      : live connection, turn handling, interruption
-   ├─ tools/       : look, move_to, move_relative, move_straight, ...
+   ├─ tools/       : look, pick, move_to, move_relative, move_straight, ...
    ├─ perception/  : Gemini detector ─► SAM2 masks ─► depth + TF ─► base-frame xyz
    ├─ Camera       : synced color/depth + intrinsics + TF snapshots
    └─ Robot        : action clients + latest RobotState
@@ -64,7 +64,7 @@ One `rclcpp::Node` (`src/kortex_controller/src/controller.cpp`) that opens a Kor
 **Concurrency.** Every Kortex call goes through one mutex, `mApiMutex`. Each accepted goal runs on its own detached thread and polls the arm until it arrives, times out, is canceled, or is stopped. The state timer also takes the mutex.
 
 **Motion primitives.**
-- `MoveToPose` solves IK with Kortex, seeded with the current joint angles, then executes the result as a joint-space move. A joint-space move gives smoother motion than a Cartesian move and keeps the orientation.
+- `MoveToPose` solves IK with Kortex, then executes the result as a joint-space move. The solver is deterministic per seed, so `solveIK` runs it `ik_attempts` times (default 50: once from the measured joint angles, then from random seeds), discards duplicate branches, and sorts the rest by total joint travel from the current configuration. Candidates are confirmed with forward kinematics cheapest-first (`ik_position_tolerance_m`, `ik_orientation_tolerance_deg`), and the first that reaches the target wins. A joint-space move gives smoother motion than a Cartesian move and keeps the orientation.
 - `MoveToJoints` polls joint angles until all are within 1°, handling 360° wraparound, with a 30 s timeout.
 - `MoveStraight` computes the tool Z axis in the base frame from the reported Euler angles (`toolZAxis` / `shiftAlongToolZ`), sends a Cartesian target, and polls with `pollUntilCartesianTarget` (1 cm tolerance, 5 s timeout).
 - `CommandGripper` sends a position command. Reaching the numeric target is not required for success, because the gripper can stop against a grasped object before it gets there.
@@ -120,7 +120,8 @@ A tool is an async function `fn(ctx: ToolContext, **args) -> dict` registered wi
 
 | Tool | Does |
 |---|---|
-| `look(objects)` | Finds named objects and returns their base-frame centroids plus an annotated image |
+| `look(objects)` | Finds named objects and returns their base-frame centroids, grasp width, and depth estimate, plus an annotated image |
+| `pick(x, y, z, width_mm, depth_mm)` | Macro: preshape the gripper wider than the object, move to it, advance to its middle, close onto it |
 | `move_to(x, y, z)` | `MoveToPose` to a base-frame point, keeping the current orientation |
 | `move_relative(dx, dy, dz)` | Same as `move_to`, relative to the current pose |
 | `move_straight(distance)` | `MoveStraight` along the gripper axis |
@@ -136,13 +137,30 @@ Every result is a JSON-able dict with `ok`, `status`, optional `message`, and a 
 
 `perception.locate_objects(snapshot, names)` works in three stages, each swappable:
 
-1. **`detector.detect_boxes`**: a non-streaming Gemini call (`perception.detector_model`) returns `box_2d` boxes normalized to 0–1000, one per visible instance.
+1. **`detector.detect_boxes`**: a non-streaming Gemini call (`perception.detector_model`) returns `box_2d` boxes normalized to 0–1000, one per visible instance, each with a `depth_mm` estimate. The prompt lives in `prompts/look.md` (`perception.look_prompt`).
 2. **`segmenter.segment`**: SAM2 (local checkout, not pip-installed) turns each box into its highest-scoring mask.
-3. **`localize.centroid`**: deprojects the mask's valid depth pixels with the intrinsics, transforms them into the base frame with the snapshot's TF, and averages them.
+3. **`localize.measure`**: deprojects the mask's valid depth pixels with the intrinsics, transforms them into the base frame with the snapshot's TF, and averages them for the centroid. It also returns `width_mm`, the object's extent across the gripper fingers.
+
+`width_mm` is measured; `depth_mm` is not. Nothing in the pipeline can see an object's hidden side, so depth is the detector model's prior from what the object is ("a fork is a few mm thick, an upright mug is its diameter"). `pick` treats it as a guess and clamps it to `MAX_DEPTH_MM`.
+
+Width is the pixel span of the mask scaled by the object's median depth, `Δu · z / fx`. That is the extent along the camera's x axis, which is the grasp axis because the gripper's orientation is never changed — its fingers always open along the image's horizontal axis. The span uses the 2nd/98th percentile of the mask's columns rather than its min and max, since the extremes are exactly where SAM2 bleeds past the silhouette and where the depth camera drops out. The trim costs a few percent on small objects, well inside `pick`'s clearance.
 
 Objects get ids like `red cup#1` that are valid only for that call. `localize.annotate` draws mask outlines and ids onto the image, which is sent back to the model so it can check its own detections.
 
 Because coordinates are in the base frame, they stay valid after the camera moves. The system prompt (`prompts/system.md`) tells the model to measure once with `look` and plug the result into the motion tools.
+
+#### Grasping (`pick`)
+
+Closing a fully-open gripper onto an object drags or tips it before the pads meet, which was the main cause of failed grasps. `tools/grasp.py` replaces that with a four-step macro driven by `look`'s measurements:
+
+1. preshape the gripper to `width_mm + CLEARANCE_MM`, so the fingers clear the object before anything is near it
+2. `MoveToPose` to the object's centroid, keeping the current orientation
+3. `MoveStraight` by `depth_mm / 2`, so the pads straddle the object's middle rather than its near face
+4. close to `width_mm − SQUEEZE_MM`, so the fingers load against the object instead of stopping beside it
+
+`CLEARANCE_MM` and `SQUEEZE_MM` are module constants, like the holster's tuning. `gripper_for_width` maps millimeters to a gripper command by linear interpolation over a table measured on hardware (143 mm at 0.0 down to 0 mm at 0.98), clamped at both ends. Objects thinner than the table's 5.5 mm resolution fall through to 0.98, i.e. close all the way.
+
+`pick` does not change orientation and does not verify the grasp; the model aims the gripper first and checks the result in the image it gets afterwards.
 
 #### Tool holster (`attach` / `detach`)
 

@@ -22,6 +22,9 @@
 #include <chrono>
 #include <thread>
 #include <cmath>
+#include <random>
+#include <utility>
+#include <vector>
 
 // Custom Interfaces
 #include "ros2_interfaces/action/command_gripper.hpp"
@@ -92,6 +95,12 @@ private:
     // finger_joint upper limit in the URDF: 0 rad open, 0.7 rad fully closed
     static constexpr double FINGER_JOINT_CLOSED_RAD = 0.7;
 
+    // IK search: how many seeds to try, and how close FK has to land for a solution to count
+    int mIKAttempts{50};
+    double mIKPositionTol{0.005};      // metres
+    double mIKOrientationTol{2.0};     // degrees
+    std::mt19937 mRng{std::random_device{}()};
+
     // Publishers/Helpers
     void publishState();
     void publishJointStates(const k_api::Base::JointAngles& joints, float gripper_pos);
@@ -134,6 +143,9 @@ private:
 
     // Motion Helpers
     bool solveIK(const k_api::Base::Pose& target, k_api::Base::JointAngles& ik_solution_out, std::string& error_out);
+    static double angularDelta(double from_deg, double to_deg);
+    static double jointMotionCost(const k_api::Base::JointAngles& from, const k_api::Base::JointAngles& to);
+    bool poseMatches(const k_api::Base::Pose& a, const k_api::Base::Pose& b) const;
     void toolZAxis(float theta_x, float theta_y, float theta_z, double out[3]) const;
     k_api::Base::Pose shiftAlongToolZ(const k_api::Base::Pose& pose, double distance) const;
 

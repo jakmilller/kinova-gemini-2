@@ -4,8 +4,13 @@ import cv2
 import numpy as np
 
 
-def centroid(mask, snapshot) -> dict:
-    """Mean of the object's valid depth pixels, in base-frame meters."""
+# percentile of the mask's columns used as its left and right edge. Plain min/max sit
+# exactly where SAM2 bleeds past the silhouette and where the depth camera is worst.
+_EDGE_PCT = 2.0
+
+
+def measure(mask, snapshot) -> dict:
+    """Centroid in base-frame meters, plus grasp width in millimeters."""
     ys, xs = np.nonzero(mask)
     if len(xs) == 0:
         return {'measurable': False, 'reason': 'empty mask'}
@@ -26,7 +31,18 @@ def centroid(mask, snapshot) -> dict:
     base_points = (snapshot.T_base_proj @ homogeneous.T).T[:, :3]
 
     mean = base_points.mean(axis=0)
-    return {'measurable': True, 'centroid_xyz': [round(float(v), 3) for v in mean]}
+
+    # The gripper never changes orientation, so its fingers always open along the image's
+    # horizontal axis. That makes the grasp width the object's extent in camera x, which
+    # is just the pixel span scaled by depth -- no transform needed.
+    left, right = np.percentile(xs, [_EDGE_PCT, 100.0 - _EDGE_PCT])
+    width_mm = (right - left) * float(np.median(z)) / fx * 1000.0
+
+    return {
+        'measurable': True,
+        'centroid_xyz': [round(float(v), 3) for v in mean],
+        'width_mm': round(float(width_mm), 1),
+    }
 
 
 def annotate(rgb, objects: list, masks: list):

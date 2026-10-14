@@ -10,7 +10,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together.
 |---|---|---|
 | `src/ros2_interfaces` | msg/srv/action | Custom ROS 2 actions, service, and `RobotState` message |
 | `src/kortex_controller` | C++ | Talks to the arm over the Kortex API and exposes it as ROS 2 actions |
-| `src/gemini_agent` | Python | Gemini Live session, tools (`look`, `move_to`, `attach`, ...), and perception (Gemini boxes + SAM2 masks + depth) |
+| `src/gemini_agent` | Python | Gemini Live session, tools (`look`, `pick`, `move_to`, `attach`, ...), and perception (Gemini boxes + SAM2 masks + depth) |
 | `src/app_interface` | Python | Phone-app transports (BLE, Bluetooth RFCOMM, TCP) that publish instructions |
 | `src/kinova_bringup` | launch | Launch files for the robot stack and the full agent |
 | `web/index.html` | HTML/JS | Browser UI: chat, model thoughts, tool calls, images the model saw, camera stream, robot state, stop button |
@@ -65,6 +65,7 @@ ros2 launch kinova_bringup robot.launch.py
 ros2 run gemini_agent tool_cli --list
 ros2 run gemini_agent tool_cli move_relative '{"dz": 0.03}'
 ros2 run gemini_agent tool_cli look '{"objects": ["red cup"]}'
+ros2 run gemini_agent tool_cli pick '{"x": 0.45, "y": 0.0, "z": 0.1, "width_mm": 60, "depth_mm": 70}'
 ros2 run gemini_agent tool_cli attach '{"name": "fork"}'
 ```
 

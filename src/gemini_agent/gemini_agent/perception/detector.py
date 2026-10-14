@@ -9,16 +9,16 @@ import re
 import cv2
 from google.genai import types
 
-_PROMPT = (
-    'You are the eyes for a robot arm, from a wrist-mounted camera'
-    'Detect the following in this image: {names}.\n'
-    'Return a JSON list. Each entry is {{"label": <one of the requested names, copied exactly>, '
-    '"box_2d": [ymin, xmin, ymax, xmax]}} with coordinates normalized to 0-1000.\n'
-    'Include one entry per visible instance; several instances may share a label. '
-    'Omit any requested object that is not visible. Return [] if none are visible.'
-    'At the bottom of this image you can see the ends of the grippers (gray with black pads).'
-    'Do not return the grippers as an argument.'
-)
+_prompt_cache: dict = {}
+
+
+def _prompt(cfg: dict) -> str:
+    """The look prompt, read once from the path in config.yaml's perception block."""
+    path = cfg['look_prompt']
+    if path not in _prompt_cache:
+        with open(path) as f:
+            _prompt_cache[path] = f.read()
+    return _prompt_cache[path]
 
 
 def _strip_fences(text: str) -> str:
@@ -28,7 +28,11 @@ def _strip_fences(text: str) -> str:
 
 
 def detect_boxes(client, cfg: dict, rgb, names: list) -> list:
-    """-> [{"label": str, "box_2d": [ymin, xmin, ymax, xmax]}] normalized 0-1000."""
+    """-> [{"label": str, "box_2d": [...] normalized 0-1000, "depth_mm": float|None}].
+
+    depth_mm is the model's estimate of the object's hidden extent away from the camera;
+    it is a prior from object knowledge, not a measurement.
+    """
     ok, buf = cv2.imencode('.jpg', cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
     if not ok:
         raise RuntimeError('JPEG encoding failed')
@@ -37,7 +41,7 @@ def detect_boxes(client, cfg: dict, rgb, names: list) -> list:
         model=cfg['detector_model'],
         contents=[
             types.Part.from_bytes(data=buf.tobytes(), mime_type='image/jpeg'),
-            _PROMPT.format(names=', '.join(names)),
+            _prompt(cfg).format(names=', '.join(names)),
         ],
         config=types.GenerateContentConfig(
             response_mime_type='application/json',
@@ -65,5 +69,9 @@ def detect_boxes(client, cfg: dict, rgb, names: list) -> list:
             box = [float(v) for v in box]
         except (TypeError, ValueError):
             continue
-        boxes.append({'label': label, 'box_2d': box})
+        try:  # a missing or unparseable depth estimate is not worth dropping the box over
+            depth_mm = float(entry['depth_mm'])
+        except (KeyError, TypeError, ValueError):
+            depth_mm = None
+        boxes.append({'label': label, 'box_2d': box, 'depth_mm': depth_mm})
     return boxes

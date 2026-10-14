@@ -15,7 +15,14 @@ Controller::Controller() : Node("kortex_controller")
     this->declare_parameter("password", "admin");
     this->declare_parameter("config_path", std::string(std::getenv("HOME") ? std::getenv("HOME") : "") + "/kinova-gemini/config.yaml");
 
+    this->declare_parameter("ik_attempts", 50);
+    this->declare_parameter("ik_position_tolerance_m", 0.005);
+    this->declare_parameter("ik_orientation_tolerance_deg", 2.0);
+
     std::string robot_ip = this->get_parameter("robot_ip").as_string();
+    mIKAttempts = std::max(1, static_cast<int>(this->get_parameter("ik_attempts").as_int()));
+    mIKPositionTol = this->get_parameter("ik_position_tolerance_m").as_double();
+    mIKOrientationTol = this->get_parameter("ik_orientation_tolerance_deg").as_double();
 
     // --- Kortex API Setup ---
     mTransport = new k_api::TransportClientTcp();
@@ -307,39 +314,138 @@ Controller::PollOutcome Controller::pollUntilCartesianTarget(
 }
 
 
+double Controller::angularDelta(double from_deg, double to_deg)
+{
+    // shortest signed rotation from -> to, in (-180, 180]
+    double d = std::fmod(to_deg - from_deg, 360.0);
+    if (d > 180.0)  d -= 360.0;
+    if (d < -180.0) d += 360.0;
+    return d;
+}
+
+
+double Controller::jointMotionCost(const k_api::Base::JointAngles& from, const k_api::Base::JointAngles& to)
+{
+    // total joint travel in degrees, taking the short way around for continuous joints
+    double cost = 0.0;
+    for (int i = 0; i < from.joint_angles_size() && i < to.joint_angles_size(); ++i) {
+        cost += std::fabs(angularDelta(from.joint_angles(i).value(), to.joint_angles(i).value()));
+    }
+    return cost;
+}
+
+
+bool Controller::poseMatches(const k_api::Base::Pose& a, const k_api::Base::Pose& b) const
+{
+    const double dx = a.x() - b.x();
+    const double dy = a.y() - b.y();
+    const double dz = a.z() - b.z();
+    if (std::sqrt(dx * dx + dy * dy + dz * dz) > mIKPositionTol) return false;
+
+    return std::fabs(angularDelta(a.theta_x(), b.theta_x())) <= mIKOrientationTol
+        && std::fabs(angularDelta(a.theta_y(), b.theta_y())) <= mIKOrientationTol
+        && std::fabs(angularDelta(a.theta_z(), b.theta_z())) <= mIKOrientationTol;
+}
+
+
 bool Controller::solveIK(const k_api::Base::Pose& target, k_api::Base::JointAngles& ik_solution_out, std::string& error_out)
 {
-    // seed solver with current joint configuration
+    // The Kortex solver is deterministic for a given seed, so a single call just returns whatever
+    // branch the current configuration happens to sit in - sometimes an awkward one. Instead we
+    // solve many times (first from the measured configuration, then from random seeds), keep every
+    // distinct solution, and take the one that moves the joints the least. Candidates are checked
+    // with FK before being accepted, cheapest first, so a seed that converged somewhere else can't
+    // win by being "close".
     k_api::Base::JointAngles measured;
-    k_api::Base::JointAngles solution;
     try {
         std::lock_guard<std::mutex> lock(mApiMutex);
         measured = mBase->GetMeasuredJointAngles();
-
-        k_api::Base::IKData ik_data;
-        auto* pose = ik_data.mutable_cartesian_pose();
-        pose->set_x(target.x());             pose->set_y(target.y());
-        pose->set_z(target.z());             pose->set_theta_x(target.theta_x());
-        pose->set_theta_y(target.theta_y()); pose->set_theta_z(target.theta_z());
-
-        for (int i = 0; i < measured.joint_angles_size(); ++i) {
-            auto* g = ik_data.mutable_guess()->add_joint_angles();
-            g->set_joint_identifier(measured.joint_angles(i).joint_identifier());
-            g->set_value(measured.joint_angles(i).value());
-        }
-        // simplest right now is just solving once, but it could be worth it to solve a bunch of times then choose the joint solution that is closest to current measured config
-        solution = mBase->ComputeInverseKinematics(ik_data);
     } catch (std::exception& ex) {
         error_out = ex.what();
         return false;
     }
-
-    if (solution.joint_angles_size() < measured.joint_angles_size()) {
-        error_out = "IK did not converge";
+    const int joint_count = measured.joint_angles_size();
+    if (joint_count == 0) {
+        error_out = "could not read measured joint angles";
         return false;
     }
-    ik_solution_out = solution;
-    return true;
+
+    k_api::Base::IKData ik_data;
+    auto* pose = ik_data.mutable_cartesian_pose();
+    pose->set_x(target.x());             pose->set_y(target.y());
+    pose->set_z(target.z());             pose->set_theta_x(target.theta_x());
+    pose->set_theta_y(target.theta_y()); pose->set_theta_z(target.theta_z());
+
+    auto* guess = ik_data.mutable_guess();
+    for (int i = 0; i < joint_count; ++i) {
+        auto* g = guess->add_joint_angles();
+        g->set_joint_identifier(measured.joint_angles(i).joint_identifier());
+        g->set_value(measured.joint_angles(i).value());
+    }
+
+    std::uniform_real_distribution<double> full_circle(0.0, 360.0);
+    std::vector<std::pair<double, k_api::Base::JointAngles>> candidates;
+    std::string last_error;
+
+    for (int attempt = 0; attempt < mIKAttempts; ++attempt) {
+        if (attempt > 0) {
+            // random restart - the measured configuration is only tried once
+            for (int i = 0; i < joint_count; ++i) {
+                guess->mutable_joint_angles(i)->set_value(static_cast<float>(full_circle(mRng)));
+            }
+        }
+
+        k_api::Base::JointAngles solution;
+        try {
+            std::lock_guard<std::mutex> lock(mApiMutex);
+            solution = mBase->ComputeInverseKinematics(ik_data);
+        } catch (std::exception& ex) {
+            last_error = ex.what();
+            continue;   // this seed did not converge, try another
+        }
+        if (solution.joint_angles_size() < joint_count) continue;
+
+        double cost = jointMotionCost(measured, solution);
+
+        // drop duplicates of a branch we already have
+        bool duplicate = false;
+        for (const auto& c : candidates) {
+            if (jointMotionCost(c.second, solution) < 1.0) { duplicate = true; break; }
+        }
+        if (duplicate) continue;
+
+        candidates.emplace_back(cost, solution);
+    }
+
+    if (candidates.empty()) {
+        error_out = last_error.empty() ? "IK did not converge" : ("IK did not converge: " + last_error);
+        return false;
+    }
+
+    std::sort(candidates.begin(), candidates.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    // verify cheapest-first so we normally pay for a single FK call
+    for (const auto& candidate : candidates) {
+        k_api::Base::Pose reached;
+        try {
+            std::lock_guard<std::mutex> lock(mApiMutex);
+            reached = mBase->ComputeForwardKinematics(candidate.second);
+        } catch (std::exception& ex) {
+            last_error = ex.what();
+            continue;
+        }
+        if (!poseMatches(reached, target)) continue;
+
+        RCLCPP_INFO(this->get_logger(),
+                    "IK: %zu distinct solutions from %d attempts, chose one with %.1f deg of total joint motion",
+                    candidates.size(), mIKAttempts, candidate.first);
+        ik_solution_out = candidate.second;
+        return true;
+    }
+
+    error_out = "no IK solution reached the target pose (" + std::to_string(candidates.size()) + " candidates rejected)";
+    return false;
 }
 
 
