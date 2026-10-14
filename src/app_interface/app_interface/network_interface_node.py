@@ -1,9 +1,12 @@
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String 
+from sensor_msgs.msg import CompressedImage
 import threading
 import socket
+import struct
 import threading
+import json
 
 LISTEN_PORT = 9100
 
@@ -20,7 +23,8 @@ class NetworkInterfaceNode(Node):
     def __init__(self):
         super().__init__('network_interface_node')
         self.publisher = self.create_publisher(String, '/user_instructions', 10)
-        self.create_subscription(String, '/brain_status', self.status_callback, 10)
+        self.create_subscription(String, '/agent/events', self.status_callback, 10)
+        self.create_subscription(CompressedImage, '/agent/model_image', self.image_callback, 10)
         self.get_logger().info('Network Interface Node listening...')
 
         self.client_conn = None
@@ -66,14 +70,33 @@ class NetworkInterfaceNode(Node):
                     pass
 
     def status_callback(self, msg):
-        self.send_to_tablet(msg.data)
+        ev = json.loads(msg.data)
+        if ev['type'] == 'model_text': 
+            self.send_to_tablet(ev['data']['text'])
+
+    def image_callback(self, img):
+        self.send_image_to_tablet(bytes(img.data))
+
+    def send_image_to_tablet(self, imgBytes):
+        with self.client_lock:
+            conn = self.client_conn
+        if conn is not None: 
+            try: 
+                conn.sendall(b'\x01') # Video Packet Type Indicator
+                conn.sendall(struct.pack('!I', len(imgBytes))) # 4-byte Big-Endian Length
+                conn.sendall(imgBytes) # Raw JPEG payload content
+            except OSError as e:
+                self.get_logger().warn(f'Failed to send status to tablet: {e}')
 
     def send_to_tablet(self, text):
         with self.client_lock:
             conn = self.client_conn
         if conn is not None: 
             try: 
-                conn.sendall((text + "\n"). encode("utf-8"))
+                message_bytes = (text + "\n").encode("utf-8")
+                conn.sendall(b'\x02')
+                conn.sendall(struct.pack('!I', len(message_bytes)))
+                conn.sendall(message_bytes)
             except OSError as e:
                 self.get_logger().warn(f'Failed to send status to tablet: {e}')
 

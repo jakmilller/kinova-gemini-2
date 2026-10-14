@@ -9,6 +9,7 @@
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>std_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
 
   <!-- pip: bleak (ble_interface only). The bluetooth transport talks to BlueZ
        through ctypes and needs no extra package. -->
