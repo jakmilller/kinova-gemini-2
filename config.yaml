@@ -13,7 +13,13 @@ tools:                           # enabled tools; comment a line out to remove a
   - set_gripper
   - go_to_preset
   - stop
+  - attach
+  - detach
   # - move_to_pose               # raw 6-DoF Euler pose; off by default
+
+holster:                         # ArUco marker id -> tool in that holster slot.
+  1: nothing                        # Maintain by hand to match the physical holster;
+  2: fork                     # the names become the attach/detach enum.
 
 perception:
   detector_model: gemini-3.5-flash-lite   # any non-streaming Gemini model that returns box_2d; verify availability
@@ -38,7 +44,8 @@ camera:
 presets:                         # joint angles, degrees (7 values). Keys become the go_to_preset enum.
   home: [0.0, 340.2, 179.3, 226.1, 358.5, 329.6, 92.1]                    # default position
   user: [358.8, 32.4, 181.3, 277.9, 359.1, 24.5, 90.0]                    # facing the user
-  holster: [359.8, 353.3, 180.3, 238.0, 0.07, 300.8, 90.2]
+  holster: [0.0, 351, 179.3, 242.7, 359.9, 293.8, 90.0]
+
 
 ros:
   instruction_topic: /user_instructions

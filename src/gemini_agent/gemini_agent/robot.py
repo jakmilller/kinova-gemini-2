@@ -131,6 +131,12 @@ class Robot:
         return (float(s.x), float(s.y), float(s.z),
                 float(s.theta_x), float(s.theta_y), float(s.theta_z))
 
+    def gripper_position(self):
+        """Gripper opening (0 open .. 1 closed), or None if no state yet."""
+        if self._state is None:
+            return None
+        return float(self._state.gripper_position)
+
     async def stop(self):
         """Halt the arm in the C++ node, then cancel whatever goals we have open."""
         self._stop_pub.publish(Empty())

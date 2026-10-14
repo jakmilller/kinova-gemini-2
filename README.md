@@ -10,10 +10,10 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together.
 |---|---|---|
 | `src/ros2_interfaces` | msg/srv/action | Custom ROS 2 actions, service, and `RobotState` message |
 | `src/kortex_controller` | C++ | Talks to the arm over the Kortex API and exposes it as ROS 2 actions |
-| `src/gemini_agent` | Python | Gemini Live session, tools (`look`, `move_to`, ...), and perception (Gemini boxes + SAM2 masks + depth) |
+| `src/gemini_agent` | Python | Gemini Live session, tools (`look`, `move_to`, `attach`, ...), and perception (Gemini boxes + SAM2 masks + depth) |
 | `src/app_interface` | Python | Phone-app transports (BLE, Bluetooth RFCOMM, TCP) that publish instructions |
 | `src/kinova_bringup` | launch | Launch files for the robot stack and the full agent |
-| `web/index.html` | HTML/JS | Browser UI: chat, model thoughts, tool calls, images the model saw, stop button |
+| `web/index.html` | HTML/JS | Browser UI: chat, model thoughts, tool calls, images the model saw, camera stream, robot state, stop button |
 
 ## Requirements
 
@@ -32,9 +32,12 @@ cp .env.example .env   # then put your key in .env
 # 2. Build (from the repo root)
 colcon build --symlink-install
 source install/setup.bash
+
+# optional - ensure entry points point to conda env
+sed -i '1s|.*|#!/home/mcrr-lab/anaconda3/envs/kinova-gemini/bin/python3|' install/{gemini_agent/lib/gemini_agent,app_interface/lib/app_interface}/*
 ```
 
-Edit `config.yaml` for your setup: model, enabled tools, SAM2 paths, camera topics, and preset joint positions.
+Edit `config.yaml` for your setup: model, enabled tools, SAM2 paths, camera topics, preset joint positions, and the `holster:` map of ArUco marker id to the physical tool in that slot.
 
 ## Running
 
@@ -62,6 +65,7 @@ ros2 launch kinova_bringup robot.launch.py
 ros2 run gemini_agent tool_cli --list
 ros2 run gemini_agent tool_cli move_relative '{"dz": 0.03}'
 ros2 run gemini_agent tool_cli look '{"objects": ["red cup"]}'
+ros2 run gemini_agent tool_cli attach '{"name": "fork"}'
 ```
 
 Ctrl-C cancels the running robot goal.

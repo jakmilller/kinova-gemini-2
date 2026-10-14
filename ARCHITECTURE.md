@@ -99,7 +99,7 @@ SAM2 is loaded with `segmenter.preload()` **before** `rclpy.init()`. Once the ca
 | `camera.py` | `Camera`: approximately time-synced color/depth pairs, intrinsics, and `base_frame ← projection_frame` TF. `fresh_snapshot(after=t)` waits for a frame newer than `t`, so post-motion images are never stale |
 | `session.py` | `Session`: the Gemini Live connection and the core loop (below) |
 | `tools/` | Tool registry and the tool implementations |
-| `perception/` | Pipeline behind the `look` tool |
+| `perception/` | Pipeline behind the `look` tool, plus `aruco.py` for the holster markers |
 | `agent_node.py` | Wires everything together and publishes UI events and images |
 | `tool_cli.py` | Same wiring, but runs one tool and prints its JSON result |
 
@@ -128,6 +128,7 @@ A tool is an async function `fn(ctx: ToolContext, **args) -> dict` registered wi
 | `go_to_preset(name)` | `MoveToJoints` to a preset from `config.yaml` (the enum is filled in from config) |
 | `stop()` | Publishes `/stop` and cancels open goals |
 | `move_to_pose(...)` | Raw 6-DoF pose (off by default; turning it on also exposes orientation in `state()`) |
+| `attach(name)` / `detach(name)` | Pick a physical tool off the holster, or put it back (the enum is filled in from `holster:` in `config.yaml`) |
 
 Every result is a JSON-able dict with `ok`, `status`, optional `message`, and a `robot` state snapshot. Keys starting with `_` (such as `_image`) are stripped before the dict goes to the model.
 
@@ -142,6 +143,18 @@ Every result is a JSON-able dict with `ok`, `status`, optional `message`, and a 
 Objects get ids like `red cup#1` that are valid only for that call. `localize.annotate` draws mask outlines and ids onto the image, which is sent back to the model so it can check its own detections.
 
 Because coordinates are in the base frame, they stay valid after the camera moves. The system prompt (`prompts/system.md`) tells the model to measure once with `look` and plug the result into the motion tools.
+
+#### Tool holster (`attach` / `detach`)
+
+The holster holds physical tools (a fork, a brush, ...) in front of the arm, each slot marked with a DICT_4X4_50 ArUco marker. `config.yaml`'s `holster:` block maps marker id to tool name and is maintained by hand to match the physical holster; its names become the `attach`/`detach` enum.
+
+Both tools run the same six steps in `tools/holster.py`: move to the `holster` preset (`attach` also closes the gripper to `ATTACH_GRIPPER_START`, so its release starts from a known opening), detect the slot's marker with `perception/aruco.py` and take `marker center + offset` as the target point, move above it keeping the current orientation, move straight in along the tool axis, open (attach) or close (detach) the gripper by a fixed amount, and move straight back out. The offsets, hover heights, and distances are module constants tuned on hardware with `scratch/holster_test.py`, whose steps 1–6 and 8–13 are the two sequences.
+
+The detection takes the first camera frame stamped after the arm parked at the preset, not one newer than the moment it asks: TF is resolved at the frame's own stamp, so any frame from the parked pose is geometrically correct, and the wrist stream stalls for up to a second at a time.
+
+The module remembers what is attached, so `attach` refuses while something is held and `detach` refuses a name that does not match. The state starts out unknown after a restart, in which case `detach` proceeds anyway.
+
+> The mounted tool changes the TCP; nothing accounts for that yet, so motion after an `attach` is still relative to the bare gripper.
 
 #### Observability
 
@@ -164,7 +177,9 @@ Each node also forwards `/brain_status` strings back to the phone. The current a
 
 ### `web/index.html`: operator UI
 
-A single static page using roslibjs over rosbridge. It shows a timeline built from `/agent/events` (user and model bubbles, collapsible thoughts, tool calls and results), attaches `/agent/model_image` frames to their events by image id, shows live `/robot_state`, and has an instruction box (`/user_instructions`) and a stop button (`/stop`).
+A single static page using roslibjs over rosbridge, styled with Tailwind and Font Awesome from CDNs. The layout is a header (connection and session pills, emergency stop), a two-thirds event timeline beside the camera stream from `web_video_server`, and a `/robot_state` strip along the bottom (pose, orientation, gripper bar, and a Moving/Stationary estimate derived client-side from joint-angle deltas, since nothing publishes a motion flag).
+
+The timeline is built from `/agent/events`: user and model bubbles, collapsible thoughts, tool calls and results with status badges, and `look`/`holster` summaries. `/agent/model_image` frames are attached to their events by image id, in either arrival order. The instruction box publishes `/user_instructions` and the stop button publishes `/stop`.
 
 ## Configuration
 
@@ -173,6 +188,7 @@ All runtime behavior is in `config.yaml` at the repo root:
 - `model`: Live model name, thinking level, whether thoughts are included, system prompt path, context compression
 - `tools`: which tools the model gets
 - `perception`: detector model, SAM2 repo, config, checkpoint, device, and whether the annotated image is sent
+- `holster`: ArUco marker id -> the physical tool in that holster slot
 - `camera`: topics, projection and base frames, image send width and JPEG quality, settle time after motion, sync slop
 - `presets`: named joint configurations (degrees)
 - `ros`: topic names used by the agent

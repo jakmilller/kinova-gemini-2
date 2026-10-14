@@ -3,6 +3,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <std_msgs/msg/empty.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 
 
@@ -86,6 +87,7 @@ private:
 
     // Subscribers
     rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr SubStop;
+    rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr SubJointVelocity;
 
     // finger_joint upper limit in the URDF: 0 rad open, 0.7 rad fully closed
     static constexpr double FINGER_JOINT_CLOSED_RAD = 0.7;
@@ -94,6 +96,7 @@ private:
     void publishState();
     void publishJointStates(const k_api::Base::JointAngles& joints, float gripper_pos);
     void handleStop(const std_msgs::msg::Empty::SharedPtr);
+    void handleJointVelocity(const std_msgs::msg::Float64MultiArray::SharedPtr);
     float get_gripper_position();
 
     // Action Execution Functions

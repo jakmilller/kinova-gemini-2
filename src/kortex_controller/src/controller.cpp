@@ -80,6 +80,10 @@ Controller::Controller() : Node("kortex_controller")
     SubStop = this->create_subscription<std_msgs::msg::Empty>(
         "/stop", 10, std::bind(&Controller::handleStop, this, _1));
 
+    // open-loop joint speed command: 7 values in deg/s, all zeros halts the arm
+    SubJointVelocity = this->create_subscription<std_msgs::msg::Float64MultiArray>(
+        "/joint_velocity", 10, std::bind(&Controller::handleJointVelocity, this, _1));
+
     RCLCPP_INFO(this->get_logger(), "Kinova Controller Initialized");
     
 }
@@ -209,6 +213,40 @@ void Controller::handleStop(const std_msgs::msg::Empty::SharedPtr)
     }
     mStopRequested = true;
     RCLCPP_WARN(this->get_logger(), "Stop requested on /stop - arm halted.");
+}
+
+
+void Controller::handleJointVelocity(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
+{
+    if (msg->data.size() != 7) {
+        RCLCPP_ERROR(this->get_logger(), "/joint_velocity needs 7 values, got %zu", msg->data.size());
+        return;
+    }
+
+    // Kortex latches the last speed command, so all-zeros is how the caller stops the arm
+    bool all_zero = true;
+    for (double v : msg->data) {
+        if (v != 0.0) { all_zero = false; break; }
+    }
+
+    std::lock_guard<std::mutex> lock(mApiMutex);
+    try {
+        if (all_zero) {
+            mBase->Stop();
+            return;
+        }
+
+        k_api::Base::JointSpeeds speeds;
+        for (int i = 0; i < 7; ++i) {
+            auto s = speeds.add_joint_speeds();
+            s->set_joint_identifier(i);
+            s->set_value(static_cast<float>(msg->data[i]));
+        }
+        // runs until the next command or a Stop
+        mBase->SendJointSpeedsCommand(speeds);
+    } catch (std::exception& ex) {
+        RCLCPP_ERROR(this->get_logger(), "Kortex error on /joint_velocity: %s", ex.what());
+    }
 }
 
 

@@ -27,7 +27,7 @@ def tool(name: str, description: str, parameters: dict):
     return wrap
 
 
-from . import motion, perception  # noqa: E402,F401  (registers tools)
+from . import holster, motion, perception  # noqa: E402,F401  (registers tools)
 
 
 def load(names: list, cfg: dict) -> dict:
@@ -37,4 +37,8 @@ def load(names: list, cfg: dict) -> dict:
     tools = {n: REGISTRY[n] for n in names}
     if 'go_to_preset' in tools:  # fill the preset enum from config
         tools['go_to_preset']['declaration']['parameters']['properties']['name']['enum'] = list(cfg['presets'])
+    for name in ('attach', 'detach'):  # fill the holster enum from config
+        if name in tools:
+            tools[name]['declaration']['parameters']['properties']['name']['enum'] = \
+                holster.holster_names(cfg)
     return tools

@@ -10,11 +10,14 @@ import cv2
 from google.genai import types
 
 _PROMPT = (
+    'You are the eyes for a robot arm, from a wrist-mounted camera'
     'Detect the following in this image: {names}.\n'
     'Return a JSON list. Each entry is {{"label": <one of the requested names, copied exactly>, '
     '"box_2d": [ymin, xmin, ymax, xmax]}} with coordinates normalized to 0-1000.\n'
     'Include one entry per visible instance; several instances may share a label. '
     'Omit any requested object that is not visible. Return [] if none are visible.'
+    'At the bottom of this image you can see the ends of the grippers (gray with black pads).'
+    'Do not return the grippers as an argument.'
 )
 
 
