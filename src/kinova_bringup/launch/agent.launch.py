@@ -23,7 +23,7 @@ def _app_node(transport):
 
 # robot.launch.py plus the Gemini agent
 def generate_launch_description():
-    robot_ip_arg = DeclareLaunchArgument('robot_ip', default_value='192.168.1.10')
+    robot_ip_arg = DeclareLaunchArgument('robot_ip', default_value='192.168.77.10')
     username_arg = DeclareLaunchArgument('username', default_value='admin')
     password_arg = DeclareLaunchArgument('password', default_value='admin')
     rviz_arg = DeclareLaunchArgument('rviz', default_value='false')

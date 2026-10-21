@@ -26,7 +26,7 @@ presets:                         # joint angles, degrees (7 values). Keys become
   home: [0.0, 340.2, 179.3, 226.1, 358.5, 329.6, 92.1]                    # default position
   user: [358.8, 32.4, 181.3, 277.9, 359.1, 24.5, 90.0]                    # facing the user
   #holster: [0.0, 351, 179.3, 242.7, 359.9, 293.8, 90.0] # test
-  holster: [326.4, 6.87, 149.0, 257.3, 8.86, 291.2, 23.3] # sprint review
+  holster: [326.4, 6.87, 149.0, 257.3, 8.86, 291.2, 29.7] # sprint review
 
 
 

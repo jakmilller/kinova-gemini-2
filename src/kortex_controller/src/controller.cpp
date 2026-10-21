@@ -10,7 +10,7 @@ using namespace std::placeholders;
 Controller::Controller() : Node("kortex_controller")
 {
     // Parameters
-    this->declare_parameter("robot_ip", "192.168.1.10");
+    this->declare_parameter("robot_ip", "192.168.77.10");
     this->declare_parameter("username", "admin");
     this->declare_parameter("password", "admin");
     this->declare_parameter("config_path", std::string(std::getenv("HOME") ? std::getenv("HOME") : "") + "/kinova-gemini/config.yaml");

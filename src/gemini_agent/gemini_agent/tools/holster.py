@@ -37,12 +37,12 @@ HOLSTER_PRESET = 'holster'     # preset the holster is visible from, in config.y
 # target point = marker center + this offset, in meters, in the camera
 # (physical_realsense_link, optical convention) frame:
 #   +x = image right, +y = image down, +z = away from the camera (depth)
-ATTACH_OFFSET_CAM = (0.0, 0.065, 0.0)
+ATTACH_OFFSET_CAM = (0.00, 0.065, 0.0)
 ATTACH_HOVER_Z = 0.03          # m added to the target point's base_link z
 ATTACH_APPROACH = 0.08         # m along the tool axis (+ = forward)
 ATTACH_RETREAT = -0.15         # m along the tool axis (- = backward)
 
-DETACH_OFFSET_CAM = (0.0, 0.05, 0.0)
+DETACH_OFFSET_CAM = (0.00, 0.05, 0.0)
 DETACH_HOVER_Z = 0.1
 DETACH_APPROACH = 0.12
 DETACH_RETREAT = -0.10

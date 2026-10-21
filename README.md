@@ -1,8 +1,8 @@
-# kinova-gemini
+# Kinova Gen3 x Gemini Live
 
-Natural-language control of a Kinova Gen3 arm. A user types (or speaks, from a phone app) an instruction; a Gemini Live session sees the wrist camera, locates objects, and calls motion tools that drive the arm through a C++ Kortex controller.
+Enables natural-language control of a Kinova Gen3 arm. A user speaks an instruction and a Gemini Live session sequences a skill library to move the robot.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together.
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for how it works.
 
 ## Packages
 
@@ -44,12 +44,12 @@ Edit `config.yaml` for your setup: model, enabled tools, SAM2 paths, camera topi
 Full stack (controller, camera, TF, rosbridge, and the Gemini agent):
 
 ```bash
-ros2 launch kinova_bringup agent.launch.py robot_ip:=192.168.1.10
+ros2 launch kinova_bringup agent.launch.py robot_ip:=192.168.77.10
 ```
 
 Then open `web/index.html` in a browser (it connects to rosbridge on `ws://localhost:9090`).
 
-Launch arguments: `robot_ip`, `username`, `password` (default `192.168.1.10` / `admin` / `admin`), `rviz:=true`, and `app:=ble|bluetooth|network|none` to start a phone transport.
+Launch arguments: `robot_ip`, `username`, `password` (default `192.168.77.10` / `admin` / `admin`), `rviz:=true`, and `app:=ble|bluetooth|network|none` to start a phone transport.
 
 Robot stack only, without the agent:
 
