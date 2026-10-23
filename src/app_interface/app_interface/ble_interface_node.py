@@ -49,7 +49,7 @@ class BLEInterfaceNode(Node):
         if self._loop is None:
             dbg_ble("   dropped: BLE loop not running yet")
             return
-        if ev.type == 'model_text':
+        if ev['type'] == 'model_text': 
             dbg_ble(f'/agent/events -> phone: "{ev['data']['text']}"')
             asyncio.run_coroutine_threadsafe(self._link.send_status(ev['data']['text']), self._loop)
 

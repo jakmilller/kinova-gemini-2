@@ -7,7 +7,7 @@ import socket
 import threading
 import struct
 import time
-from PIL import Image, ImageDraw
+import collections
 
 RFCOMM_CHANNEL = 4
 
@@ -46,115 +46,105 @@ def find_free_channel(start=1, end=30):
                 errors.append(f'rfcomm ch {ch} OSError: {e}')
         raise OSError("No free RFCOMM channel, checked 1-30: \n" + "\n".join(errors))
 
-def rfcomm_accept(server):
+class MockBluetoothKit:
 
-    print("Waiting for an incoming Android connection...")
-    
-    conn_socket, client_info = server.accept()
-    peer_address = client_info[0] 
-    
-    print(f"Connection accepted from remote device: {peer_address}")
-    return conn_socket, peer_address
+    def __init__(self):
+        self.client_conn = None
+        self.client_lock = threading.Lock()
 
-def send_test_images(conn, addr, stop_event):
-    frame_count = 0
-    while not stop_event.is_set():
-        try:
-            img = Image.new('RGB', (640, 480), color='#1a1a1a')
-            draw = ImageDraw.Draw(img)
-            
-            # Draw the moving red circle animation sequence
-            x_offset = (frame_count % 30) * 10
-            draw.ellipse([300 + x_offset, 200, 380 + x_offset, 280], fill='#ff4444')
-            
-            # 2. Compress the drawing directly into native JPEG binary bytes
-            img_byte_arr = io.BytesIO()
-            img.save(img_byte_arr, format='JPEG')
-            frame_bytes = img_byte_arr.getvalue()
+        self._out_cv = threading.Condition()
+        self._text_q = collections.deque(maxlen=200)
+        threading.Thread(target=self.send_loop, daemon=True).start()
 
-            # 3. Stream framing sequence down the raw socket connection
-            conn.sendall(b'\x01') # Video Packet Type Indicator
-            header = struct.pack('!I', len(frame_bytes))
-            conn.sendall(header) # 4-byte Big-Endian Length
-            conn.sendall(frame_bytes) # Raw JPEG payload content
+    def queue_message(self, packet_type, payload, timeData):
+        with self._out_cv:
+            self._text_q.append((packet_type, payload, timeData))
+            self._out_cv.notify()
 
-            frame_count += 1
-            print(f"Sent image w/ header: {header}")
-            time.sleep(0.1) # ~10 FPS
-
-        except OSError as e:
-            print(f"Video stream stopped: {e}")
-
-        
-
-def handle_client_connection(conn, addr):
-
-    buf = b""
-    disconnect_event = threading.Event()
-
-    sender_thread = threading.Thread(
-        target=send_test_images, 
-        args=(conn, addr, disconnect_event),
-        daemon=True
-    )
-    sender_thread.start()
-
-    try:
+    def send_loop(self):
         while True:
-            data = conn.recv(1024)
-            if not data:
-                break
-            buf += data
-            while b"\n" in buf:
-                line, _, buf = buf.partition(b"\n")
-                instruction = line.decode("utf-8", errors="replace").strip()
-                if instruction:
-                    publish_instruction(instruction)
-                    response_str = f"Acknowledged: {instruction}\n"
-                    message_bytes = (response_str + "\n").encode("utf-8")
-                    conn.sendall(b'\x02')
-                    conn.sendall(struct.pack('!I', len(message_bytes)))
-                    conn.sendall(message_bytes)
-    except OSError as e:
-        print(f'Connection ended: {e}')
-    finally:
-        disconnect_event.set()
-        sender_thread.join(timeout=1.0)
-        try:
-            conn.close()
-        except Exception:
-            pass
+            with self._out_cv:
+                while not self._text_q:
+                    self._out_cv.wait()
+                if self._text_q:
+                    packet_type, payload, timeData = self._text_q.popleft()
+            self.send_packet(packet_type, payload, timeData)
 
-def run_server():
-
-    try:
-        server, ch = find_free_channel()
-
-    except OSError as e:
-        print(f'Cannot make BT socket ({e})')
-        return
-
-    try:
-        while True:
+    def send_packet(self, packet_type: bytes, payload: bytes, timeData):
+        with self.client_lock:
+            conn = self.client_conn
+        if conn is not None:
+            t_start_bt = time.time()
             try:
-                conn, addr = rfcomm_accept(server)
-                handle_client_connection(conn, addr)
+                conn.sendall(packet_type + struct.pack('!I', len(payload)) + payload)
             except OSError as e:
-                print(f'BT accept failed, stopping server ({e})')
-                break
+                self.get_logger().warn(f'Failed to send to tablet: {e}')
+            t_done_bt = time.time()
+            print(
+                f'time before received by node: {(timeData['time_ev'] - timeData['time_node_rec']) * 1000:.0f}ms \n'
+                f'time in queue: {(t_start_bt - timeData['time_ev']) * 1000:.0f}ms \n'
+                f'time to send over bt: {(t_done_bt - t_start_bt) * 1000:.0f}ms \n'
+                f'total time: {(t_done_bt - timeData['time_ev']) * 1000:.0f}ms'
+            )
 
-    finally:
-        server.close()
 
+    def handle_client_connection(self, conn, addr):
 
-def publish_instruction(instruction):
-    print(f'Published BT instruction from tablet: {instruction}')
+        with self.client_lock:
+            self.client_conn = conn
 
-async def main():
-    await asyncio.to_thread(run_server())
+        buf = b""
+
+        try:
+            while True:
+                
+                data = conn.recv(1024)
+                if not data:
+                    break
+                buf += data
+                time_start = time.time()
+                while b"\n" in buf:
+                    line, _, buf = buf.partition(b"\n")
+                    instruction = line.decode("utf-8", errors="replace").strip()
+                    if instruction:
+                        time_finished = time.time()
+                        fakeTimeData = {'time_ev': time_start, 'time_node_rec': time_finished}
+                        self.queue_message(b'\x02', (instruction + "\n").encode("utf-8"), fakeTimeData)
+        except OSError as e:
+            print(f'Connection ended: {e}')
+        finally:
+
+            with self.client_lock:
+                self.client_conn = None
+            try:
+                conn.close()
+            except OSError:
+                pass
+            print('tablet disconnected.')
+
+    def run_server(self):
+        try:
+            server, ch = find_free_channel()
+    
+        except OSError as e:
+            print(f'Cannot make BT socket ({e})')
+            return
+    
+        try:
+            while True:
+                try:
+                    conn, info = server.accept()
+                except OSError as e:
+                    print(f'BT accept failed, stopping server ({e})')
+                    break
+                self.handle_client_connection(conn, info[0])
+    
+        finally:
+            server.close()
+
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        MockBluetoothKit().run_server()
     except KeyboardInterrupt:
         print("\nStopped.")
