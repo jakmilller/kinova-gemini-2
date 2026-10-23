@@ -16,7 +16,6 @@ public interface KitLink {
         void onKitConnectionChanged(boolean connected, @NonNull String detail);
         void onDbgMsg(String msg);
         void onKitCamera(String streamUrl);
-        void onKitCamera(byte[] image);
     }
 
     void connect();

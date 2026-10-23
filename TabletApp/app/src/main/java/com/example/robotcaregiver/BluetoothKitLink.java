@@ -142,7 +142,6 @@ public class BluetoothKitLink implements KitLink {
                         byte[] frame = new byte[frameLength];
                         buffer.readFully(frame);
                         if(line == (byte)0x02) listener.onKitStatus(new String(frame, StandardCharsets.UTF_8));
-                        else if (line == (byte)0x01) listener.onKitCamera(frame);
                     }
                 }
             }

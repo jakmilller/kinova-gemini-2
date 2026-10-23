@@ -8,6 +8,8 @@ import os
 import socket
 import threading
 import json
+import time
+import collections
 
 RFCOMM_CHANNEL = 1
 
@@ -83,7 +85,6 @@ class BluetoothInterfaceNode(Node):
         super().__init__('bluetooth_interface_node')
         self.publisher = self.create_publisher(String, '/user_instructions', 10)
         self.create_subscription(String, '/agent/events', self.status_callback, 10)
-        self.create_subscription(CompressedImage, '/agent/model_image', self.image_callback, 10)
 
         self.client_conn = None
         self.client_lock = threading.Lock()
@@ -91,6 +92,11 @@ class BluetoothInterfaceNode(Node):
 
         self.server_thread = threading.Thread(target=self.run_server, daemon=True)
         self.server_thread.start()
+
+        self._out_cv = threading.Condition()
+        self._text_q = collections.deque(maxlen=200)
+        self.sender_thread = threading.Thread(target=self.send_loop, daemon=True)
+        self.sender_thread.start()
 
         self.get_logger().info(f'Bluetooth interface node listening on RFCOMM ch {RFCOMM_CHANNEL}')
 
@@ -140,36 +146,45 @@ class BluetoothInterfaceNode(Node):
                 except Exception:
                     pass
 
+    def send_loop(self):
+        while True:
+            with self._out_cv:
+                while not self._text_q:
+                    self._out_cv.wait()
+                if self._text_q:
+                    packet_type, payload, timeData = self._text_q.popleft()
+            self.send_packet(packet_type, payload, timeData)
+
+    def send_packet(self, packet_type: bytes, payload: bytes, timeData):
+        with self.client_lock:
+            conn = self.client_conn
+        if conn is not None:
+            t_start_bt = time.time()
+            try:
+                conn.sendall(packet_type + struct.pack('!I', len(payload)) + payload)
+            except OSError as e:
+                self.get_logger().warn(f'Failed to send to tablet: {e}')
+            t_done_bt = time.time()
+            self.get_logger().info(
+                f'time before received by node: {(timeData['time_ev'] - timeData['time_node_rec']) * 1000:.0f}ms \n'
+                f'time in queue: {(t_start_bt - timeData['time_ev']) * 1000:.0f}ms \n'
+                f'time to send over bt: {(t_done_bt - t_start_bt) * 1000:.0f}ms \n'
+                f'total time: {(t_done_bt - timeData['time_ev']) * 1000:.0f}ms'
+            )
+
     def status_callback(self, msg):
         ev = json.loads(msg.data)
+        t_recv = time.time()
+        timeData = {'time_ev': ev['t'], 'time_node_rec': t_recv}
         if ev['type'] == 'model_text': 
-            self.send_to_tablet(ev['data']['text'])
-
-    def image_callback(self, img):
-        self.send_image_to_tablet(bytes(img.data))
-
-    def send_image_to_tablet(self, imgBytes):
-        with self.client_lock:
-            conn = self.client_conn
-        if conn is not None: 
-            try: 
-                conn.sendall(b'\x01') # Video Packet Type Indicator
-                conn.sendall(struct.pack('!I', len(imgBytes))) # 4-byte Big-Endian Length
-                conn.sendall(imgBytes) # Raw JPEG payload content
-            except OSError as e:
-                self.get_logger().warn(f'Failed to send status to tablet: {e}')
+            self.queue_message(b'\x02', (ev['data']['text'] + "\n").encode("utf-8"), timeData)
+        elif ev['type'] == 'model_thought':
+            self.queue_message(b'\x02', ('thinking: ' + ev['data']['text'] + "\n").encode("utf-8"), timeData)
     
-    def send_to_tablet(self, text):
-        with self.client_lock:
-            conn = self.client_conn
-        if conn is not None: 
-            try: 
-                message_bytes = (text + "\n").encode("utf-8")
-                conn.sendall(b'\x02')
-                conn.sendall(struct.pack('!I', len(message_bytes)))
-                conn.sendall(message_bytes)
-            except OSError as e:
-                self.get_logger().warn(f'Failed to send status to tablet: {e}')
+    def queue_message(self, packet_type, payload, timeData):
+        with self._out_cv:
+            self._text_q.append((packet_type, payload, timeData))
+            self._out_cv.notify()
 
     def publish_instruction(self, instruction):
         msg = String()
