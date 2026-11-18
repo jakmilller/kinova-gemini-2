@@ -1,13 +1,16 @@
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
-from sensor_msgs.msg import CompressedImage
+from std_msgs.msg import String, Bool
 import ctypes
 import struct
 import os
 import socket
 import threading
 import json
+import time
+import collections
+
+from .stack_launcher import StackLauncher, STACK_PREFIX
 
 RFCOMM_CHANNEL = 1
 
@@ -18,6 +21,8 @@ RFCOMM_CHANNEL = 1
 # address-agnostic and works on a plain socket object on any interpreter.
 AF_BLUETOOTH = 31
 BTPROTO_RFCOMM = 3
+
+CONFIG_PREFIX = "CONFIG "
 
 _libc = ctypes.CDLL("libc.so.6", use_errno=True)
 
@@ -82,8 +87,10 @@ class BluetoothInterfaceNode(Node):
     def __init__(self):
         super().__init__('bluetooth_interface_node')
         self.publisher = self.create_publisher(String, '/user_instructions', 10)
+        self.free_move_publisher = self.create_publisher(Bool, '/free_move', 10)
+        self.config_publisher = self.create_publisher(String, '/config_update', 10)
         self.create_subscription(String, '/agent/events', self.status_callback, 10)
-        self.create_subscription(CompressedImage, '/agent/model_image', self.image_callback, 10)
+        self.launcher = StackLauncher(self, self.send_status_line)
 
         self.client_conn = None
         self.client_lock = threading.Lock()
@@ -91,6 +98,11 @@ class BluetoothInterfaceNode(Node):
 
         self.server_thread = threading.Thread(target=self.run_server, daemon=True)
         self.server_thread.start()
+
+        self._out_cv = threading.Condition()
+        self._text_q = collections.deque(maxlen=200)
+        self.sender_thread = threading.Thread(target=self.send_loop, daemon=True)
+        self.sender_thread.start()
 
         self.get_logger().info(f'Bluetooth interface node listening on RFCOMM ch {RFCOMM_CHANNEL}')
 
@@ -118,6 +130,8 @@ class BluetoothInterfaceNode(Node):
             with self.client_lock:
                 self.client_conn = conn
 
+            self.launcher.ensure_running()
+
             buf = b""
             try:
                 while True:
@@ -129,10 +143,12 @@ class BluetoothInterfaceNode(Node):
                         line, _, buf = buf.partition(b"\n")
                         instruction = line.decode("utf-8", errors="replace").strip()
                         if instruction:
-                            self.publish_instruction(instruction)
+                            self.handle_line(instruction)
             except OSError as e: 
                 self.get_logger().warn(f'Connection ended: {e}')
             finally:
+                #turn off admittance mode if connection lost while updating config presets
+                self.free_move_publisher.publish(Bool(data=False))
                 with self.client_lock:
                     self.client_conn = None
                 try:
@@ -140,36 +156,71 @@ class BluetoothInterfaceNode(Node):
                 except Exception:
                     pass
 
+    def send_loop(self):
+        while True:
+            with self._out_cv:
+                while not self._text_q:
+                    self._out_cv.wait()
+                if self._text_q:
+                    packet_type, payload, timeData = self._text_q.popleft()
+            self.send_packet(packet_type, payload, timeData)
+
+    def send_packet(self, packet_type: bytes, payload: bytes, timeData):
+        with self.client_lock:
+            conn = self.client_conn
+        if conn is not None:
+            t_start_bt = time.time()
+            try:
+                conn.sendall(packet_type + struct.pack('!I', len(payload)) + payload)
+            except OSError as e:
+                self.get_logger().warn(f'Failed to send to tablet: {e}')
+            t_done_bt = time.time()
+            self.get_logger().info(
+                f'time before received by node: {(timeData['time_node_rec'] - timeData['time_ev']) * 1000:.0f}ms \n'
+                f'time in queue: {(t_start_bt - timeData['time_node_rec']) * 1000:.0f}ms \n'
+                f'time to send over bt: {(t_done_bt - t_start_bt) * 1000:.0f}ms \n'
+                f'total time: {(t_done_bt - timeData['time_ev']) * 1000:.0f}ms'
+            )
+
     def status_callback(self, msg):
         ev = json.loads(msg.data)
+        t_recv = time.time()
+        timeData = {'time_ev': ev['t'], 'time_node_rec': t_recv}
         if ev['type'] == 'model_text': 
-            self.send_to_tablet(ev['data']['text'])
-
-    def image_callback(self, img):
-        self.send_image_to_tablet(bytes(img.data))
-
-    def send_image_to_tablet(self, imgBytes):
-        with self.client_lock:
-            conn = self.client_conn
-        if conn is not None: 
-            try: 
-                conn.sendall(b'\x01') # Video Packet Type Indicator
-                conn.sendall(struct.pack('!I', len(imgBytes))) # 4-byte Big-Endian Length
-                conn.sendall(imgBytes) # Raw JPEG payload content
-            except OSError as e:
-                self.get_logger().warn(f'Failed to send status to tablet: {e}')
+            self.queue_message(b'\x02', (ev['data']['text'] + "\n").encode("utf-8"), timeData)
+        elif ev['type'] == 'model_thought':
+            self.queue_message(b'\x02', ('thinking: ' + ev['data']['text'] + "\n").encode("utf-8"), timeData)
+        elif ev['type'] == 'config':
+            self.queue_message(b'\x02', (json.dumps(ev['data'], default=str) + "\n").encode("utf-8"), timeData)
+        elif ev['type'] == 'error':
+            self.queue_message(b'\x02', ('error: ' + str(ev['data'].get('message', ev['data'])) + "\n").encode("utf-8"), timeData)
     
-    def send_to_tablet(self, text):
-        with self.client_lock:
-            conn = self.client_conn
-        if conn is not None: 
-            try: 
-                message_bytes = (text + "\n").encode("utf-8")
-                conn.sendall(b'\x02')
-                conn.sendall(struct.pack('!I', len(message_bytes)))
-                conn.sendall(message_bytes)
-            except OSError as e:
-                self.get_logger().warn(f'Failed to send status to tablet: {e}')
+    def send_status_line(self, text):
+        """Plain status line to the tablet (stack launcher progress)."""
+        now = time.time()
+        self.queue_message(b'\x02', (text + "\n").encode("utf-8"),
+                           {'time_ev': now, 'time_node_rec': now})
+
+    def queue_message(self, packet_type, payload, timeData):
+        with self._out_cv:
+            self._text_q.append((packet_type, payload, timeData))
+            self._out_cv.notify()
+
+    def handle_line(self, line):
+        if line.startswith(CONFIG_PREFIX):
+            payload = line[len(CONFIG_PREFIX):].strip()
+            self.config_publisher.publish(String(data=payload))
+        elif line.startswith(STACK_PREFIX):
+            self.handle_stack_command(line[len(STACK_PREFIX):].strip())
+        else:
+            self.launcher.submit_instruction(line, self.publish_instruction)
+
+    def handle_stack_command(self, command):
+        if command == 'stop':
+            self.free_move_publisher.publish(Bool(data=False))   # leave the arm locked
+            self.launcher.stop()
+        else:
+            self.get_logger().warn(f'Unknown stack command from the app: {command!r}')
 
     def publish_instruction(self, instruction):
         msg = String()
@@ -187,6 +238,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node.launcher.shutdown()
         # Release the RFCOMM channel promptly so an immediate relaunch can rebind it.
         for sock in (node.client_conn, node.server):
             if sock is not None:

@@ -19,7 +19,7 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for more details.
 
 - ROS 2 with `realsense2_camera`, `kortex_description`, `robot_state_publisher`, `rosbridge_server`, `web_video_server`, `cv_bridge`, `message_filters`, `tf2_ros`
 - Kinova Kortex C++ API, unpacked into `src/kortex_controller/kortex_api/` (`include/` and `lib/release/libKortexApiCpp.a`; not checked in)
-- Python deps for the agent: `google-genai`, `python-dotenv`, `pyyaml`, `opencv-python`, `numpy`, `torch`, `mediapipe`
+- Python deps for the agent: `google-genai`, `python-dotenv`, `pyyaml`, `ruamel.yaml`, `opencv-python`, `numpy`, `torch`, `mediapipe`
 - The MediaPipe face landmarker model at `models/face_landmarker.task` (not checked in; used by the `itch` skill):
   `mkdir -p models && curl -fsSL -o models/face_landmarker.task https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`
 - A local [SAM2](https://github.com/facebookresearch/sam2) checkout with a checkpoint (path set in `config.yaml` under `perception`)
@@ -58,6 +58,18 @@ Robot stack only, without the agent:
 ```bash
 ros2 launch kinova_bringup robot.launch.py
 ```
+
+### Starting from the phone
+
+You can also start just a phone transport and let the app bring up everything else:
+
+```bash
+ros2 run app_interface network_interface   # or bluetooth_interface / ble_interface
+```
+
+When the app connects, the transport checks the ROS graph for `gemini_agent` / `kinova_controller`. If neither is running it launches `agent.launch.py app:=none` with its `robot_ip`, `username`, `password` and `rviz` parameters and tells the app "Starting the robot..." and then "Robot ready" once the agent is listening. Stopping the transport (Ctrl-C) stops the stack it launched. A stack that was already running is reused and left alone. Set `-p auto_launch:=false` to turn this off.
+
+The controller halts the arm when the transport is stopped.
 
 ### Running a single skill by hand
 

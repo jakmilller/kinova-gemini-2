@@ -2,11 +2,11 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/empty.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <geometry_msgs/msg/vector3_stamped.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
-
 
 // Kortex API
 #include <BaseClientRpc.h>
@@ -93,6 +93,7 @@ private:
     uint64_t actionEventSeq();
     void onActionNotification(const k_api::Base::ActionNotification& n);
     std::string describeArmState();
+    std::atomic<bool> mFreeMove{false};
 
     // Action Servers
     rclcpp_action::Server<CommandGripper>::SharedPtr CommandGripperServer;
@@ -114,6 +115,7 @@ private:
     rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr SubStop;
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr SubJointVelocity;
     rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr SubServoVector;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr SubFreeMove;
 
     // latest /servo_vector (TCP -> target, base frame), counted so ServoToTarget can tell new from repeated
     std::mutex mServoMutex;
@@ -141,9 +143,11 @@ private:
     void publishState();
     void publishJointStates(const k_api::Base::JointAngles& joints, float gripper_pos);
     void handleStop(const std_msgs::msg::Empty::SharedPtr);
+    void stopArm();   
     void handleJointVelocity(const std_msgs::msg::Float64MultiArray::SharedPtr);
     void handleServoVector(const geometry_msgs::msg::Vector3Stamped::SharedPtr);
     float get_gripper_position();
+    void handleFreeMove(const std_msgs::msg::Bool::SharedPtr);
 
     // Action Execution Functions
     void execute_gripper(const std::shared_ptr<GoalHandleCommandGripper>);
@@ -183,6 +187,8 @@ private:
 
     // Tool TCP
     bool setToolLength(float length, std::string& error_out);
+    
+    bool setFreeMove(bool enabled, std::string& error_out);
 
     // Motion Helpers
     bool solveIK(const k_api::Base::Pose& target, k_api::Base::JointAngles& ik_solution_out, std::string& error_out);
