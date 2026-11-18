@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 HOLSTER_PRESET = 'holster'     # preset the holster is visible from, in config.yaml
 
 # target point = marker center + this offset, in meters, in the camera
-# (physical_realsense_link, optical convention) frame:
+# (realsense_color_optical_frame, optical convention) frame:
 #   +x = image right, +y = image down, +z = away from the camera (depth)
 ATTACH_OFFSET_CAM = (0.00, 0.065, 0.0)
 ATTACH_HOVER_Z = 0.03          # m added to the target point's base_link z

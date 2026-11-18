@@ -32,6 +32,9 @@ presets:                         # joint angles, degrees (7 values). Keys become
   user: [120, 15, 180, 229, 359, 54, 90]
   #holster: [0.0, 351, 179.3, 242.7, 359.9, 293.8, 90.0] # test
   holster: [326.4, 6.87, 149.0, 257.3, 8.86, 291.2, 29.7] # sprint review
+  cup: [18.2, 44.9, 180.0, 294.1, 120.1, 96.6, 27.6] # measured by hand
+
+
 
 
 
@@ -49,7 +52,7 @@ camera:
   color_topic: /camera/realsense/color/image_raw
   depth_topic: /camera/realsense/aligned_depth_to_color/image_raw
   info_topic: /camera/realsense/aligned_depth_to_color/camera_info
-  projection_frame: physical_realsense_link   # frame that deprojected points are expressed in (see §6.5)
+  projection_frame: realsense_color_optical_frame   # frame that deprojected points are expressed in (see §6.5)
   base_frame: base_link
   send_width: 640                # images are resized to this width before sending
   jpeg_quality: 80

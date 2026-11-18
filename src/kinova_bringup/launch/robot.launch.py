@@ -76,7 +76,7 @@ def generate_launch_description():
             " ",
             "dof:=", LaunchConfiguration('dof'),
             " ",
-            "vision:=true",
+            "vision:=false",
             " ",
             "use_fake_hardware:=false",
         ]
@@ -91,41 +91,62 @@ def generate_launch_description():
         output="screen",
         parameters=[robot_description],
     )
-    
-    # we have mounted RealSense camera, create static transform
-    # should technically adjust urdf
+
+# camera transform, according to OnShape assembly (end effector origin to left depth camera origin)
+    # realsense_transform = Node(
+    #     package='tf2_ros',
+    #     executable='static_transform_publisher',
+    #     arguments=[
+    #         '0.0175',  # x offset (offsets calculated from OnShape assembly)
+    #         '0.0635',    # y offset
+    #         '-0.004234',   # z offset
+    #         '-1.5708',    # roll
+    #         '-1.5708',    # pitch
+    #         '0.0',    # yaw
+    #         'end_effector_link',  # kinova camera frame
+    #         'realsense_link'  # external RealSense frame
+    #     ],
+    #     name='realsense_transform'
+    # )
+
+# from easy_handeye2 calibration
+
+# transform:
+#   translation:
+#     x: 0.02007401496991271
+#     y: 0.06197335285291799
+#     z: -0.030076264611610615
+#   rotation:
+#     x: -0.48994649383326205
+#     y: -0.5168790844934305
+#     z: -0.4667655095515981
+#     w: 0.5243266198532772
+
+# both OnShape and easy_handeye2 calibration was slightly off. Manually calibrated using scratch/aruco_camera_calibration.py
     realsense_transform = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
         arguments=[
-            '-0.01',  # x offset (all offsets calculated from mounted RealSense)
-            '0.003',    # y offset
-            '0.031',   # z offset
+            '0.010074',  # x offset 
+            '0.075',    # y offset
+            '-0.004234',   # z offset
             '-1.5708',    # roll
             '-1.5708',    # pitch
-            '3.14159',    # yaw
-            'camera_link',  # kinova camera frame
+            '0.0',    # yaw
+            'end_effector_link',  # kinova camera frame
             'realsense_link'  # external RealSense frame
         ],
         name='realsense_transform'
     )
 
-# the first one makes sure that the pointclouds are visualized right, this one is the frame
-# measure() projects through (CAMERA_FRAME in gemini_live_brain_node.py)
-    physical_realsense_transform = Node(
+    # TCP frame for visualization; z must match the controller's bare_tool_z
+    tcp_transform = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
-        arguments=[
-            '-0.03',  # x offset (all offsets calculated from mounted RealSense)
-            '-0.003',    # y offset
-            '0.031',   # z offset
-            '0',    # roll
-            '0',    # pitch
-            '0',    # yaw
-            'camera_link',  # kinova camera frame
-            'physical_realsense_link'  # external RealSense frame
-        ],
-        name='physical_realsense_transform'
+        arguments=['--z', '0.22',
+                   '--frame-id', 'end_effector_link',
+                   '--child-frame-id', 'tcp'],
+        name='tcp_transform'
     )
 
     # RViz for visualization
@@ -204,9 +225,10 @@ def generate_launch_description():
         controller_node,
         robot_state_publisher,
         realsense_transform,
-        physical_realsense_transform,
+        tcp_transform,
         realsense_launch,
         rosbridge_launch,
         web_video_server_node,
         rviz_node,
     ])
+

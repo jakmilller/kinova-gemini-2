@@ -58,6 +58,17 @@ Controller::Controller() : Node("kortex_controller")
     mBaseCyclic = new k_api::BaseCyclic::BaseCyclicClient(mRouter);
     mControlConfig = new k_api::ControlConfig::ControlConfigClient(mRouter);
 
+    // --- Action notifications ---
+    // the arm reports every action's start/end/abort here, with the reason for an abort
+    // (joint limit, singularity, self-collision, protection zone, ...)
+    try {
+        mActionNotifHandle = mBase->OnNotificationActionTopic(
+            [this](k_api::Base::ActionNotification n) { onActionNotification(n); },
+            k_api::Common::NotificationOptions());
+    } catch (std::exception& ex) {
+        RCLCPP_ERROR(this->get_logger(), "Could not subscribe to Kortex action notifications: %s", ex.what());
+    }
+
     // --- Tool TCP ---
     // the tool configuration persists on the arm, so every run starts from the bare gripper.
     // Mass and center of mass are kept from the robot; only the TCP z is ours.
@@ -304,12 +315,66 @@ void Controller::handleServoVector(const geometry_msgs::msg::Vector3Stamped::Sha
 
 // ----- Helper Functions ---
 
+uint64_t Controller::actionEventSeq()
+{
+    std::lock_guard<std::mutex> lock(mActionEventMutex);
+    return mActionEventSeq;
+}
+
+
+void Controller::onActionNotification(const k_api::Base::ActionNotification& n)
+{
+    // runs on the Kortex router thread: only format and store, never call mBase from here
+    std::string desc = k_api::Base::ActionEvent_Name(n.action_event())
+        + " (" + k_api::Base::ActionType_Name(n.handle().action_type())
+        + " #" + std::to_string(n.handle().identifier()) + ")";
+    const bool abort = n.action_event() == k_api::Base::ACTION_ABORT;
+    if (abort) {
+        desc += ": " + k_api::SubErrorCodes_Name(n.abort_details());
+        for (const auto& info : n.trajectory_info()) {
+            desc += " [" + k_api::Base::TrajectoryInfoType_Name(info.trajectory_info_type())
+                 + " joint_index=" + std::to_string(info.joint_index())
+                 + " waypoint_index=" + std::to_string(info.waypoint_index()) + "]";
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mActionEventMutex);
+        ++mActionEventSeq;
+        mLastActionEvent = desc;
+        if (abort) {
+            mLastAbortSeq = mActionEventSeq;
+            mLastAbortDetail = desc;
+        }
+    }
+
+    if (abort) RCLCPP_ERROR(this->get_logger(), "Kortex action event: %s", desc.c_str());
+    else       RCLCPP_INFO(this->get_logger(), "Kortex action event: %s", desc.c_str());
+}
+
+
+std::string Controller::describeArmState()
+{
+    // call with mApiMutex held
+    try {
+        auto s = mBase->GetArmState();
+        return k_api::Common::ArmState_Name(s.active_state());
+    } catch (std::exception& ex) {
+        return std::string("unknown (") + ex.what() + ")";
+    }
+}
+
+
 template<typename ActionT>
 Controller::PollOutcome Controller::pollUntilCartesianTarget(
-    const std::shared_ptr<rclcpp_action::ServerGoalHandle<ActionT>> goal_handle, double target_x, double target_y, double target_z, const char* label, double timeout_s, std::string& message_out)
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<ActionT>> goal_handle, double target_x, double target_y, double target_z, const char* label, double timeout_s, std::string& message_out,
+    uint64_t events_since)
 {
     // to check to see when the robot has moved where we wanted it to go
     const auto start = std::chrono::steady_clock::now();
+    auto last_report = start;
+    double start_dist = -1.0, last_report_dist = -1.0;
+    bool stall_reported = false;
 
     while (rclcpp::ok()) {
         if (goal_handle->is_canceling()) {
@@ -329,6 +394,31 @@ Controller::PollOutcome Controller::pollUntilCartesianTarget(
             return PollOutcome::STOPPED;
         }
 
+        // the arm gave up on our action: report its reason now instead of waiting for the timeout
+        std::string abort_msg;
+        {
+            std::lock_guard<std::mutex> lock(mActionEventMutex);
+            if (mLastAbortSeq > events_since) {
+                abort_msg = "arm aborted the move: " + mLastAbortDetail;
+            }
+        }
+        if (!abort_msg.empty()) {
+            message_out = abort_msg;
+            k_api::Base::Pose current;
+            std::string arm_state;
+            {
+                std::lock_guard<std::mutex> lock(mApiMutex);
+                current = mBase->GetMeasuredCartesianPose();
+                arm_state = describeArmState();
+            }
+            const double dist = sqrt(pow(target_x - current.x(), 2) + pow(target_y - current.y(), 2) + pow(target_z - current.z(), 2));
+            RCLCPP_ERROR(this->get_logger(),
+                         "%s %s | stopped %.3f m from target, at (%.3f, %.3f, %.3f | %.1f, %.1f, %.1f), arm state %s",
+                         label, message_out.c_str(), dist, current.x(), current.y(), current.z(),
+                         current.theta_x(), current.theta_y(), current.theta_z(), arm_state.c_str());
+            return PollOutcome::ABORTED;
+        }
+
         k_api::Base::Pose current;
         {
             std::lock_guard<std::mutex> lock(mApiMutex);
@@ -341,15 +431,56 @@ Controller::PollOutcome Controller::pollUntilCartesianTarget(
             return PollOutcome::REACHED;
         }
 
-        if (timeout_s > 0.0) {
-            double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-            if (elapsed > timeout_s) {
-                std::lock_guard<std::mutex> lock(mApiMutex);
-                mBase->Stop();
-                RCLCPP_ERROR(this->get_logger(), "%s timed out after %.1f s - stopping the arm.", label, elapsed);
-                message_out = "timed out after " + std::to_string(static_cast<int>(elapsed)) + " s";
-                return PollOutcome::TIMED_OUT;
+        const auto now = std::chrono::steady_clock::now();
+        const double elapsed = std::chrono::duration<double>(now - start).count();
+        if (start_dist < 0.0) { start_dist = dist; last_report_dist = dist; }
+
+        // progress once a second, and a one-time warning if the arm has stopped short
+        if (std::chrono::duration<double>(now - last_report).count() >= 1.0) {
+            const double moved = last_report_dist - dist;
+            RCLCPP_INFO(this->get_logger(), "%s: %.1f s, %.3f m to go (started %.3f m away, %+.3f m in the last second)",
+                        label, elapsed, dist, start_dist, moved);
+            if (std::fabs(moved) < 0.002 && !stall_reported) {
+                stall_reported = true;
+                std::string arm_state, last_event;
+                {
+                    std::lock_guard<std::mutex> lock(mApiMutex);
+                    arm_state = describeArmState();
+                }
+                {
+                    std::lock_guard<std::mutex> lock(mActionEventMutex);
+                    last_event = mLastActionEvent.empty() ? "(none)" : mLastActionEvent;
+                }
+                RCLCPP_WARN(this->get_logger(),
+                            "%s: arm is not moving, %.3f m short. Arm state %s, last Kortex action event: %s",
+                            label, dist, arm_state.c_str(), last_event.c_str());
             }
+            last_report = now;
+            last_report_dist = dist;
+        }
+
+        if (timeout_s > 0.0 && elapsed > timeout_s) {
+            std::string arm_state, last_event;
+            {
+                std::lock_guard<std::mutex> lock(mApiMutex);
+                arm_state = describeArmState();
+                mBase->Stop();
+            }
+            {
+                std::lock_guard<std::mutex> lock(mActionEventMutex);
+                last_event = mLastActionEvent.empty() ? "(none)" : mLastActionEvent;
+            }
+            RCLCPP_ERROR(this->get_logger(),
+                         "%s timed out after %.1f s - stopping the arm. Target (%.3f, %.3f, %.3f), at "
+                         "(%.3f, %.3f, %.3f | %.1f, %.1f, %.1f), %.3f m short (started %.3f m away). "
+                         "Arm state %s, last Kortex action event: %s",
+                         label, elapsed, target_x, target_y, target_z,
+                         current.x(), current.y(), current.z(),
+                         current.theta_x(), current.theta_y(), current.theta_z(),
+                         dist, start_dist, arm_state.c_str(), last_event.c_str());
+            message_out = "timed out after " + std::to_string(static_cast<int>(elapsed)) + " s, "
+                        + std::to_string(dist).substr(0, 5) + " m short; last arm event: " + last_event;
+            return PollOutcome::TIMED_OUT;
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -387,9 +518,33 @@ bool Controller::poseMatches(const k_api::Base::Pose& a, const k_api::Base::Pose
     const double dz = a.z() - b.z();
     if (std::sqrt(dx * dx + dy * dy + dz * dz) > mIKPositionTol) return false;
 
-    return std::fabs(angularDelta(a.theta_x(), b.theta_x())) <= mIKOrientationTol
-        && std::fabs(angularDelta(a.theta_y(), b.theta_y())) <= mIKOrientationTol
-        && std::fabs(angularDelta(a.theta_z(), b.theta_z())) <= mIKOrientationTol;
+    // compare the rotations themselves, not the Euler triples: the same orientation has more
+    // than one Euler representation, and near theta_y = +-90 deg theta_x/theta_z are ill-defined
+    return orientationErrorDeg(a, b) <= mIKOrientationTol;
+}
+
+
+double Controller::orientationErrorDeg(const k_api::Base::Pose& a, const k_api::Base::Pose& b)
+{
+    // angle of the rotation taking a's orientation to b's (Kortex extrinsic XYZ: R = Rz*Ry*Rx)
+    auto rot = [](const k_api::Base::Pose& p, double R[3][3]) {
+        const double tx = p.theta_x() * M_PI / 180.0;
+        const double ty = p.theta_y() * M_PI / 180.0;
+        const double tz = p.theta_z() * M_PI / 180.0;
+        const double cx = cos(tx), sx = sin(tx), cy = cos(ty), sy = sin(ty), cz = cos(tz), sz = sin(tz);
+        R[0][0] = cz * cy; R[0][1] = cz * sy * sx - sz * cx; R[0][2] = cz * sy * cx + sz * sx;
+        R[1][0] = sz * cy; R[1][1] = sz * sy * sx + cz * cx; R[1][2] = sz * sy * cx - cz * sx;
+        R[2][0] = -sy;     R[2][1] = cy * sx;                R[2][2] = cy * cx;
+    };
+    double Ra[3][3], Rb[3][3];
+    rot(a, Ra);
+    rot(b, Rb);
+    double trace = 0.0;   // trace(Ra^T Rb)
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            trace += Ra[j][i] * Rb[j][i];
+    const double c = std::max(-1.0, std::min(1.0, (trace - 1.0) / 2.0));
+    return std::acos(c) * 180.0 / M_PI;
 }
 
 
@@ -683,6 +838,7 @@ void Controller::execute_straight(const std::shared_ptr<GoalHandleMoveStraight> 
     pose->set_theta_z(current.theta_z());
 
     try {
+        const uint64_t events_since = actionEventSeq();
         {
             std::lock_guard<std::mutex> lock(mApiMutex);
             mBase->ExecuteAction(action);
@@ -693,7 +849,7 @@ void Controller::execute_straight(const std::shared_ptr<GoalHandleMoveStraight> 
         const double timeout_s = 5;
 
         std::string poll_message;
-        auto outcome = pollUntilCartesianTarget<MoveStraight>(goal_handle, target.x(), target.y(), target.z(), "MoveStraight (Tool +Z)", timeout_s, poll_message);
+        auto outcome = pollUntilCartesianTarget<MoveStraight>(goal_handle, target.x(), target.y(), target.z(), "MoveStraight (Tool +Z)", timeout_s, poll_message, events_since);
 
         result->message = poll_message;
 
@@ -858,7 +1014,7 @@ void Controller::execute_pose(const std::shared_ptr<GoalHandleMoveToPose> goal_h
 {
     /*
     We will actually get to desired Cartesian poses through joint space. This works by calculating IK of the target pose, then sending a joint-space move command to the robot.
-    Because we often keep the orientation of the tool fixed from current to target, this approach allows for smoother motion rather than locking orientation throughout the movement.
+    Solving IK first means an unreachable pose fails before the arm moves, and a joint-space move can't get stuck partway the way a straight-line Cartesian move can (joint limits or singularities along the path).
     */
     const auto goal = goal_handle->get_goal();
     auto result = std::make_shared<ros2_interfaces::action::MoveToPose::Result>();
@@ -887,15 +1043,39 @@ void Controller::execute_pose(const std::shared_ptr<GoalHandleMoveToPose> goal_h
     *action.mutable_reach_joint_angles()->mutable_joint_angles() = ik_solution;
 
     try {
+        const uint64_t events_since = actionEventSeq();
         {
             std::lock_guard<std::mutex> lock(mApiMutex);
             mBase->ExecuteAction(action);
         }
 
-        RCLCPP_INFO(this->get_logger(),"Moving to pose target: (%.3f, %.3f, %.3f)",goal->x, goal->y, goal->z);
+        RCLCPP_INFO(this->get_logger(), "Moving to pose target: (%.3f, %.3f, %.3f | %.1f, %.1f, %.1f)",
+                    goal->x, goal->y, goal->z, goal->theta_x, goal->theta_y, goal->theta_z);
 
         std::string poll_message;
-        auto outcome = pollUntilCartesianTarget<MoveToPose>(goal_handle, target.x(), target.y(), target.z(), "ExecutePose (joint space)", 15.0, poll_message);
+        auto outcome = pollUntilCartesianTarget<MoveToPose>(goal_handle, target.x(), target.y(), target.z(), "ExecutePose (joint space)", 15.0, poll_message, events_since);
+
+        // the poll returns once the position is within 1 cm, when the wrist may not have quite
+        // finished turning: let the orientation settle so the next command (e.g. move_straight,
+        // which keeps the *current* orientation) doesn't start from a half-finished rotation
+        if (outcome == PollOutcome::REACHED) {
+            const auto settle_start = std::chrono::steady_clock::now();
+            double err = 0.0;
+            while (rclcpp::ok() && !mStopRequested && !goal_handle->is_canceling()) {
+                k_api::Base::Pose current;
+                {
+                    std::lock_guard<std::mutex> lock(mApiMutex);
+                    current = mBase->GetMeasuredCartesianPose();
+                }
+                err = orientationErrorDeg(current, target);
+                if (err <= mIKOrientationTol) break;
+                if (std::chrono::duration<double>(std::chrono::steady_clock::now() - settle_start).count() > 3.0) {
+                    RCLCPP_WARN(this->get_logger(), "ExecutePose: position reached but orientation still %.1f deg off", err);
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+        }
 
         result->message = poll_message;
 

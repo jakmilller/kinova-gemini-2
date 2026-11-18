@@ -82,6 +82,18 @@ private:
     // set by the /stop subscriber, checked by every motion polling loop
     std::atomic<bool> mStopRequested{false};
 
+    // Kortex action notifications (start/end/abort + abort reason), counted so a polling loop
+    // can tell whether an abort arrived after it sent its action
+    k_api::Common::NotificationHandle mActionNotifHandle;
+    std::mutex mActionEventMutex;
+    uint64_t mActionEventSeq{0};
+    uint64_t mLastAbortSeq{0};          // seq of the most recent ACTION_ABORT (0 = none yet)
+    std::string mLastActionEvent;       // human-readable description of the most recent event
+    std::string mLastAbortDetail;       // description of the most recent ACTION_ABORT
+    uint64_t actionEventSeq();
+    void onActionNotification(const k_api::Base::ActionNotification& n);
+    std::string describeArmState();
+
     // Action Servers
     rclcpp_action::Server<CommandGripper>::SharedPtr CommandGripperServer;
     rclcpp_action::Server<MoveStraight>::SharedPtr MoveStraightServer;
@@ -177,15 +189,19 @@ private:
     static double angularDelta(double from_deg, double to_deg);
     static double jointMotionCost(const k_api::Base::JointAngles& from, const k_api::Base::JointAngles& to);
     bool poseMatches(const k_api::Base::Pose& a, const k_api::Base::Pose& b) const;
+    static double orientationErrorDeg(const k_api::Base::Pose& a, const k_api::Base::Pose& b);
     void toolZAxis(float theta_x, float theta_y, float theta_z, double out[3]) const;
     k_api::Base::Pose shiftAlongToolZ(const k_api::Base::Pose& pose, double distance) const;
 
-    enum class PollOutcome { REACHED, CANCELLED, STOPPED, TIMED_OUT };
+    enum class PollOutcome { REACHED, CANCELLED, STOPPED, TIMED_OUT, ABORTED };
 
+    // events_since: actionEventSeq() taken just before ExecuteAction, so an abort the arm
+    // reports for this action ends the poll immediately with its reason
     template<typename ActionT>
     PollOutcome pollUntilCartesianTarget(
         const std::shared_ptr<rclcpp_action::ServerGoalHandle<ActionT>> goal_handle,
         double target_x, double target_y, double target_z,
-        const char* label, double timeout_s, std::string& message_out);
+        const char* label, double timeout_s, std::string& message_out,
+        uint64_t events_since);
 
 };
